@@ -1,10 +1,9 @@
-
 #include <Arduino.h>
-#include <globals.h>
 #include <unity.h>
 
-#include "missing_tooth/missing_tooth.h"
-#include "dual_wheel/dual_wheel.h"
+#include "tests_crankmaths.h"
+
+#define UNITY_EXCLUDE_DETAILS
 
 void setup()
 {
@@ -16,8 +15,7 @@ void setup()
 
     UNITY_BEGIN();    // IMPORTANT LINE!
 
-    testMissingTooth();
-    testDualWheel();
+    testCrankMaths();
 
     UNITY_END(); // stop unit testing
 }
