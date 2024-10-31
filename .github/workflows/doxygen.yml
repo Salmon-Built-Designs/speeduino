@@ -16,7 +16,7 @@ jobs:
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
     # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
         
     - name: Build Doxygen documentation
       uses: mattnotmitt/doxygen-action@v1.9
@@ -25,13 +25,13 @@ jobs:
         working-directory: "." # default is .
 
     - name: Setup git config
-      if: github.repository_owner == 'noisymime'
+      if: github.repository_owner == 'speeduino'
       run: |
         git config --global user.name "GitHub Actions Bot"
         git config --global user.email "<>"
 
     - name: Commit updated Doxygen documentation
-      if: github.event_name != 'pull_request' && github.repository_owner == 'noisymime'
+      if: github.event_name != 'pull_request' && github.repository_owner == 'speeduino'
       env:
         GH_DOXYGEN: ${{ secrets.GH_DOXYGEN }}
       run: |

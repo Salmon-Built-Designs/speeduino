@@ -8,12 +8,11 @@
 #else
   #include "SdFat.h"
 #endif
-//#include <SdSpiCard.h>
 #include "RingBuf.h"
 
 
 #define SD_STATUS_OFF               0 /**< SD system is inactive. FS and file remain closed */
-#define SD_STATUS_READY             1 /**< File has been opened and preallocated, but a log session has not commenced */
+#define SD_STATUS_READY             1 /**< Card is present and ready, but a log session has not commenced */
 #define SD_STATUS_ACTIVE            2 /**< Log session commenced */
 #define SD_STATUS_ERROR_NO_CARD     3 /**< No SD card found when attempting to open file */
 #define SD_STATUS_ERROR_NO_FS       4 /**< No filesystem found when attempting to open file */
@@ -42,18 +41,25 @@
     #define SD_CS_PIN 10 //This is a made up value for now
 #endif
 
-//Test values only
+#define SD_LOG_NUM_FIELDS   91 /**< The number of fields that are in the log. This is always smaller than the entry size due to some fields being 2 bytes */
+#ifndef UNIT_TEST // Scope guard for unit testing
+  #define SD_LOG_ENTRY_SIZE   127 /**< The size of the live data packet used by the SD card.*/
+#else
+  #define SD_LOG_ENTRY_SIZE   1 /**< The size of the live data packet used by the SD card.*/
+#endif
+
 #define SD_LOG_FILE_SIZE  10000000 //Default 10mb file size
-#define MAX_LOG_FILES     10000
+#define MAX_LOG_FILES     9999
 #define LOG_FILE_PREFIX "SPD_"
 #define LOG_FILE_EXTENSION "csv"
-#define RING_BUF_CAPACITY SD_LOG_ENTRY_SIZE * 10 //Allow for 10 entries in the ringbuffer. Will need tuning
+#define SD_LOG_ENTRY_TOTAL_BYTES (SD_LOG_ENTRY_SIZE + SD_LOG_NUM_FIELDS + 1) //The total size of each SD log entry in bytes. This is the size of the data packet + 1 comma for each field + 1 for the newline character
+#define RING_BUF_CAPACITY (SD_LOG_ENTRY_TOTAL_BYTES * 10) //Allow for 10 entries in the ringbuffer. Will need tuning
 
 /*
 Standard FAT16/32
 SdFs sd; 
 FsFile logFile;
-RingBuf<FsFile, RING_BUF_CAPACITY> rb;
+RingBuf<ExFile, RING_BUF_CAPACITY> rb;
 */
 //ExFat
 extern SdExFat sd;
@@ -69,6 +75,7 @@ void writeSDLogEntry();
 void writetSDLogHeader();
 void beginSDLogging();
 void endSDLogging();
+void syncSDLog();
 void setTS_SD_status();
 void formatExFat();
 void deleteLogFile(char, char, char, char);
