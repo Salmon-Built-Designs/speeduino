@@ -13,6 +13,7 @@ This is for handling the data broadcasted to various CAN dashes and instrument c
 #include "comms_CAN.h"
 #include "utilities.h"
 #include "maths.h"
+#include "units.h"
 
 CAN_message_t inMsg;
 CAN_message_t outMsg;
@@ -136,7 +137,7 @@ void receiveCANwbo()
     outMsg.flags.extended = 1;
     outMsg.len = 2;
     outMsg.buf[0] = currentStatus.battery10; // We don't do any conversion since factor is 0.1 and speeduino value is x10
-    outMsg.buf[1] = BIT_CHECK(currentStatus.engine, BIT_ENGINE_RUN) ? 0x1 : 0x0; // Enable heater once engine is running (ie. above cranking rpm), this condition can be changed to CLT above certain temp and so on.
+    outMsg.buf[1] = currentStatus.engineIsRunning ? 0x1 : 0x0; // Enable heater once engine is running (ie. above cranking rpm), this condition can be changed to CLT above certain temp and so on.
     Can0.write(outMsg);
     outMsg.flags.extended = 0; //Make sure to set this back to standard to avoid future problems
     if ((inMsg.id == 0x190 || inMsg.id == 0x192))
@@ -220,7 +221,7 @@ void DashMessage(uint16_t DashMessageID)
 
     case CAN_BMW_DME2:
       temp_TPS = map(currentStatus.TPS, 0, 200, 1, 254);//TPS value conversion (from 0x01 to 0xFE)
-      temp_CLT = (((currentStatus.coolant - CALIBRATION_TEMPERATURE_OFFSET) + 48)*4/3); //CLT conversion (actual value to add is 48.373, but close enough)
+      temp_CLT = ((currentStatus.coolant + 48)*4)/3; //CLT conversion (actual value to add is 48.373, but close enough)
       if (temp_CLT > UINT8_MAX) { temp_CLT = UINT8_MAX; } //CLT conversion can yield to higher values than what fits to byte, so limit the maximum value to 255.
 
       outMsg.len = 8;
@@ -304,7 +305,7 @@ void DashMessage(uint16_t DashMessageID)
     case CAN_HALTECH_DATA3:
       temp_Advance = currentStatus.advance * 10U; //Note: Signed value
       //Convert PW into duty cycle
-      temp_DutyCycle = (currentStatus.PW1 * 100UL * currentStatus.nSquirts) / revolutionTime; 
+      temp_DutyCycle = (currentStatus.PW1 * 100UL * currentStatus.nSquirts) / currentStatus.revolutionTime; 
       if (configPage2.strokes == FOUR_STROKE) { temp_DutyCycle = temp_DutyCycle / 2U; }
 
       outMsg.len = 8;
@@ -441,10 +442,8 @@ void obd_response(uint8_t PIDmode, uint8_t requestedPIDlow, uint8_t requestedPID
   uint16_t obdcalcB;    //used in obd calcs 
   uint16_t obdcalcC;    //used in obd calcs 
   uint16_t obdcalcD;    //used in obd calcs
-  uint32_t obdcalcE32;    //used in calcs 
   uint32_t obdcalcF32;    //used in calcs 
   uint16_t obdcalcG16;    //used in calcs
-  uint16_t obdcalcH16;    //used in calcs  
 
   outMsg.len = 8;
   outMsg.flags.extended = 0; //Make sure to set this to standard
@@ -468,7 +467,7 @@ void obd_response(uint8_t PIDmode, uint8_t requestedPIDlow, uint8_t requestedPID
         outMsg.buf[0] =  0x03;                 // sending 3 bytes
         outMsg.buf[1] =  0x41;                 // Same as query, except that 40h is added to the mode value. So:41h = show current data ,42h = freeze frame ,etc.
         outMsg.buf[2] =  0x05;                 // pid code
-        outMsg.buf[3] =  (byte)(currentStatus.coolant + CALIBRATION_TEMPERATURE_OFFSET);   //the data value A
+        outMsg.buf[3] =  temperatureAddOffset(currentStatus.coolant);   //the data value A
         outMsg.buf[4] =  0x00;                 //the data value B which is 0 as unused
         outMsg.buf[5] =  0x00; 
         outMsg.buf[6] =  0x00; 
@@ -478,7 +477,7 @@ void obd_response(uint8_t PIDmode, uint8_t requestedPIDlow, uint8_t requestedPID
       case 10:        // PID-0x0A , Fuel Pressure (Gauge) , range is 0 to 765 kPa , formula == A / 3)
         uint16_t temp_fuelpressure;
         // Fuel pressure is in PSI. PSI to kPa is 6.89475729, but that needs to be divided by 3 for OBD2 formula. So 2.298.... 2.3 is close enough, so that in fraction.
-        temp_fuelpressure = (currentStatus.fuelPressure * 23) / 10;
+        temp_fuelpressure = fast_div32_16((23u * currentStatus.fuelPressure), 10);
         outMsg.buf[0] =  0x03;    // sending 3 byte
         outMsg.buf[1] =  0x41;    // 
         outMsg.buf[2] =  0x0A;    // pid code
@@ -542,7 +541,7 @@ void obd_response(uint8_t PIDmode, uint8_t requestedPIDlow, uint8_t requestedPID
         outMsg.buf[0] =  0x03;                                                         // sending 3 bytes
         outMsg.buf[1] =  0x41;                                                         // Same as query, except that 40h is added to the mode value. So:41h = show current data ,42h = freeze frame ,etc.
         outMsg.buf[2] =  0x0F;                                                         // pid code
-        outMsg.buf[3] =  (byte)(currentStatus.IAT + CALIBRATION_TEMPERATURE_OFFSET);   // A
+        outMsg.buf[3] =  temperatureAddOffset(currentStatus.IAT);   // A
         outMsg.buf[4] =  0x00;                                                         // B
         outMsg.buf[5] =  0x00; 
         outMsg.buf[6] =  0x00; 
@@ -550,10 +549,9 @@ void obd_response(uint8_t PIDmode, uint8_t requestedPIDlow, uint8_t requestedPID
       break;
 
       case 17:  // PID-0x11 , 
-        // TPS percentage, range is 0 to 100 percent, formula == 100/256 A 
-        uint16_t temp_tpsPC;
-        temp_tpsPC = currentStatus.TPS;
-        obdcalcA = (temp_tpsPC <<8) / 200;     // (tpsPC *256) /200;
+        // TPS percentage, range is 0 to 100 percent, formula == 100/255 A
+        // Faster math with possible to be off by 1(0.329%)
+        obdcalcA = (327u * currentStatus.TPS) >> 8; //327 * 200 = 0xFF78
         if (obdcalcA > UINT8_MAX){ obdcalcA = UINT8_MAX;}
         outMsg.buf[0] =  0x03;                    // sending 3 bytes
         outMsg.buf[1] =  0x41;                    // Same as query, except that 40h is added to the mode value. So:41h = show current data ,42h = freeze frame ,etc.
@@ -605,10 +603,8 @@ void obd_response(uint8_t PIDmode, uint8_t requestedPIDlow, uint8_t requestedPID
       case 36:      // PID-0x24 O2 sensor2, AB: fuel/air equivalence ratio, CD: voltage ,  Formula == (2/65536)(256A +B) , 8/65536(256C+D) , Range is 0 to <2 and 0 to >8V 
         //uint16_t O2_1e ;
         //int16_t O2_1v ; 
-        obdcalcH16 = configPage2.stoich/10 ;            // configPage2.stoich(is *10 so 14.7 is 147)
-        obdcalcE32 = currentStatus.O2/10;            // afr(is *10 so 25.5 is 255) , needs a 32bit else will overflow
-        obdcalcF32 = (obdcalcE32<<8) / obdcalcH16;      //this is same as (obdcalcE32/256) / obdcalcH16 . this calculates the ratio      
-        obdcalcG16 = (obdcalcF32 *32768)>>8;          
+        obdcalcF32 = currentStatus.O2;            // afr(is *10 so 25.5 is 255) , needs a 32bit else will overflow
+        obdcalcG16 = fast_div32_16((obdcalcF32 * 32768u), configPage2.stoich);
         obdcalcA = highByte(obdcalcG16);
         obdcalcB = lowByte(obdcalcG16);       
 
@@ -630,10 +626,8 @@ void obd_response(uint8_t PIDmode, uint8_t requestedPIDlow, uint8_t requestedPID
       case 37:      //O2 sensor2, AB fuel/air equivalence ratio, CD voltage ,  2/65536(256A +B) ,8/65536(256C+D) , range is 0 to <2 and 0 to >8V
         //uint16_t O2_2e ;
         //int16_t O2_2V ; 
-        obdcalcH16 = configPage2.stoich/10 ;            // configPage2.stoich(is *10 so 14.7 is 147)
-        obdcalcE32 = currentStatus.O2_2/10;            // afr(is *10 so 25.5 is 255) , needs a 32bit else will overflow
-        obdcalcF32 = (obdcalcE32<<8) / obdcalcH16;      //this is same as (obdcalcE32/256) / obdcalcH16 . this calculates the ratio      
-        obdcalcG16 = (obdcalcF32 *32768)>>8;          
+        obdcalcF32 = currentStatus.O2_2;            // afr(is *10 so 25.5 is 255) , needs a 32bit else will overflow
+        obdcalcG16 = fast_div32_16((obdcalcF32 * 32768u), configPage2.stoich);
         obdcalcA = highByte(obdcalcG16);
         obdcalcB = lowByte(obdcalcG16);       
 
@@ -691,7 +685,7 @@ void obd_response(uint8_t PIDmode, uint8_t requestedPIDlow, uint8_t requestedPID
       case 70:        //PID-0x46 Ambient Air Temperature , range is -40 to 215 deg C , formula == A-40
         uint16_t temp_ambientair;
         temp_ambientair = 11;              // TEST VALUE !!!!!!!!!!
-        obdcalcA = temp_ambientair + 40 ;    // maybe later will be (byte)(currentStatus.AAT + CALIBRATION_TEMPERATURE_OFFSET)
+        obdcalcA = temperatureAddOffset(temp_ambientair);
         outMsg.buf[0] =  0x03;             // sending 3 byte
         outMsg.buf[1] =  0x41;             // Same as query, except that 40h is added to the mode value. So:41h = show current data ,42h = freeze frame ,etc.
         outMsg.buf[2] =  0x46;             // pid code
@@ -703,10 +697,13 @@ void obd_response(uint8_t PIDmode, uint8_t requestedPIDlow, uint8_t requestedPID
       break;
 
       case 82:        //PID-0x52 Ethanol fuel % , range is 0 to 100% , formula == (100/255)A
+        //Ethanol sensor output can be above 100, add a check to avoid it
+        obdcalcA = (655u * currentStatus.ethanolPct) >> 8; //655 * 100 = 0xFFDC
+        if (obdcalcA > UINT8_MAX){ obdcalcA = UINT8_MAX;}
         outMsg.buf[0] =  0x03;                       // sending 3 byte
         outMsg.buf[1] =  0x41;                       // Same as query, except that 40h is added to the mode value. So:41h = show current data ,42h = freeze frame ,etc. 
         outMsg.buf[2] =  0x52;                       // pid code
-        outMsg.buf[3] =  currentStatus.ethanolPct;   // A
+        outMsg.buf[3] =  obdcalcA;                   // A
         outMsg.buf[4] =  0x00;
         outMsg.buf[5] =  0x00; 
         outMsg.buf[6] =  0x00; 
@@ -716,7 +713,7 @@ void obd_response(uint8_t PIDmode, uint8_t requestedPIDlow, uint8_t requestedPID
       case 92:        //PID-0x5C Engine oil temperature , range is -40 to 210 deg C , formula == A-40
         uint16_t temp_engineoiltemp;
         temp_engineoiltemp = 40;              // TEST VALUE !!!!!!!!!! 
-        obdcalcA = temp_engineoiltemp+40 ;    // maybe later will be (byte)(currentStatus.EOT + CALIBRATION_TEMPERATURE_OFFSET)
+        obdcalcA = temperatureAddOffset(temp_engineoiltemp);
         outMsg.buf[0] =  0x03;                // sending 3 byte
         outMsg.buf[1] =  0x41;                // Same as query, except that 40h is added to the mode value. So:41h = show current data ,42h = freeze frame ,etc. 
         outMsg.buf[2] =  0x5C;                // pid code

@@ -1,24 +1,24 @@
-#include "globals.h"
+#include "board_definition.h"
 
 #if defined(CORE_TEENSY) && defined(CORE_TEENSY35)
-#include "board_teensy35.h"
 #include "auxiliaries.h"
 #include "idle.h"
 #include "scheduler.h"
 #include "timers.h"
 #include "comms_secondary.h"
+#include <InternalTemperature.h>
+#include RTC_LIB_H
 
-/*
-  //These are declared locally in comms_CAN now due to this issue: https://github.com/tonton81/FlexCAN_T4/issues/67
-#if defined(__MK64FX512__)         // use for Teensy 3.5 only 
-  FlexCAN_T4<CAN0, RX_SIZE_256, TX_SIZE_16> Can0;
-#elif defined(__MK66FX1M0__)         // use for Teensy 3.6 only
-  FlexCAN_T4<CAN0, RX_SIZE_256, TX_SIZE_16> Can0;
-  FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> Can1; 
-#endif
-*/
+ //These are declared locally in comms_CAN now due to this issue: https://github.com/tonton81/FlexCAN_T4/issues/67
+// #if defined(__MK64FX512__)         // use for Teensy 3.5 only 
+//   FlexCAN_T4<CAN0, RX_SIZE_256, TX_SIZE_16> Can0;
+// #elif defined(__MK66FX1M0__)         // use for Teensy 3.6 only
+//   FlexCAN_T4<CAN0, RX_SIZE_256, TX_SIZE_16> Can0;
+//   FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> Can1; 
+// #endif
 
-void initBoard()
+
+void initBoard(uint32_t baudRate)
 {
     /*
     ***********************************************************************************************************
@@ -89,6 +89,8 @@ void initBoard()
 
         //Enable IRQ Interrupt
         NVIC_ENABLE_IRQ(IRQ_FTM2);
+
+        idle_pwm_max_count = (uint16_t)(MICROS_PER_SEC / (32U * configPage6.idleFreq * 2U)); //Converts the frequency in Hz to the number of ticks (at 32uS) it takes to complete 1 cycle. Note that the frequency is divided by 2 coming from TS to allow for up to 512hz
     }
 
     /*
@@ -302,6 +304,9 @@ void initBoard()
     // enable IRQ Interrupt
     NVIC_ENABLE_IRQ(IRQ_FTM0);
     NVIC_ENABLE_IRQ(IRQ_FTM3);
+
+    Serial.begin(baudRate);
+
 }
 
 void ftm0_isr(void)
@@ -409,12 +414,28 @@ uint16_t freeRam()
 }
 
 //This function is used for attempting to set the RTC time during compile
-time_t getTeensy3Time()
+static time_t getTeensy3Time()
 {
   return Teensy3Clock.get();
 }
 
 void doSystemReset() { return; }
 void jumpToBootloader() { return; }
+
+uint8_t getSystemTemp(void)
+{
+  return trunc(InternalTemperature.readTemperatureC());
+}
+
+void boardInitRTC(void)
+{
+  setSyncProvider(getTeensy3Time);
+}
+
+
+void boardInitPins(void)
+{
+  // Do nothing
+}
 
 #endif

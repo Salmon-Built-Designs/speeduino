@@ -15,7 +15,7 @@
 #include "logger.h"
 #include "scheduler.h"
 #include "scheduledIO.h"
-#include "speeduino.h"
+#include "units.h"
 
 uint8_t ioDelay[sizeof(configPage13.outputPin)];
 uint8_t ioOutDelay[sizeof(configPage13.outputPin)];
@@ -93,7 +93,7 @@ byte pinTranslateAnalog(byte rawPin)
 
 void setResetControlPinState(void)
 {
-  BIT_CLEAR(currentStatus.status3, BIT_STATUS3_RESET_PREVENT);
+  currentStatus.resetPreventActive = false;
 
   /* Setup reset control initial state */
   switch (resetControl)
@@ -101,18 +101,18 @@ void setResetControlPinState(void)
     case RESET_CONTROL_PREVENT_WHEN_RUNNING:
       /* Set the reset control pin LOW and change it to HIGH later when we get sync. */
       digitalWrite(pinResetControl, LOW);
-      BIT_CLEAR(currentStatus.status3, BIT_STATUS3_RESET_PREVENT);
+      currentStatus.resetPreventActive = false;
       break;
     case RESET_CONTROL_PREVENT_ALWAYS:
       /* Set the reset control pin HIGH and never touch it again. */
       digitalWrite(pinResetControl, HIGH);
-      BIT_SET(currentStatus.status3, BIT_STATUS3_RESET_PREVENT);
+      currentStatus.resetPreventActive = true;
       break;
     case RESET_CONTROL_SERIAL_COMMAND:
       /* Set the reset control pin HIGH. There currently isn't any practical difference
          between this and PREVENT_ALWAYS but it doesn't hurt anything to have them separate. */
       digitalWrite(pinResetControl, HIGH);
-      BIT_CLEAR(currentStatus.status3, BIT_STATUS3_RESET_PREVENT);
+      currentStatus.resetPreventActive = false;
       break;
     default:
       // Do nothing - keep MISRA happy
@@ -268,7 +268,7 @@ int16_t ProgrammableIOGetData(uint16_t index)
     else { result = getTSLogEntry(index); }
     
     //Special cases for temperatures
-    if( (index == 6) || (index == 7) ) { result -= CALIBRATION_TEMPERATURE_OFFSET; }
+    if( (index == 6) || (index == 7) ) { result = temperatureRemoveOffset(result); }
   }
   else if ( index == 239U ) { result = (int16_t)max((uint32_t)runSecsX10, (uint32_t)32768); } //STM32 used std lib
   else { result = -1; } //Index is bigger than fullStatus array

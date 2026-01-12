@@ -12,17 +12,18 @@ A full copy of the license may be found in the projects root directory
 #include "comms_secondary.h"
 #include "storage.h"
 #include "maths.h"
-#include "utilities.h"
+#include "preprocessor.h"
 #include "decoders.h"
 #include "TS_CommandButtonHandler.h"
 #include "pages.h"
 #include "page_crc.h"
 #include "logger.h"
-#include "table3d_axis_io.h"
-#include BOARD_H
+#include "board_definition.h"
 #ifdef RTC_ENABLED
   #include "rtc_common.h"
 #endif
+#include "units.h"
+#include "sensors.h"
 
 static byte currentPage = 1;//Not the same as the speeduino config page numbers
 bool firstCommsRequest = true; /**< The number of times the A command has been issued. This is used to track whether a reset has recently been performed on the controller */
@@ -56,6 +57,7 @@ Commands are single byte (letter symbol) commands.
 */
 void legacySerialCommand(void)
 {
+  serialReceiveStartTime = millis();
   if ( serialStatusFlag == SERIAL_INACTIVE )  { currentCommand = primarySerial.read(); }
 
   switch (currentCommand)
@@ -77,12 +79,12 @@ void legacySerialCommand(void)
       firstCommsRequest = false;
       break;
 
-    case 'b': // New EEPROM burn command to only burn a single page at a time
+    case 'b': // Note this is now deprecated. No EEPROM burn will take place in legacy mode
       legacySerialHandler(currentCommand, Serial, serialStatusFlag);
       break;
 
-    case 'B': // AS above but for the serial compatibility mode. 
-      BIT_SET(currentStatus.status4, BIT_STATUS4_COMMS_COMPAT); //Force the compat mode
+    case 'B': // Note this is now deprecated. No EEPROM burn will take place in legacy mode
+      currentStatus.commCompat = true; //Force the compat mode
       legacySerialHandler(currentCommand, Serial, serialStatusFlag);
       break;
 
@@ -145,24 +147,37 @@ void legacySerialCommand(void)
 
     case 'g': // Receive a dump of raw EEPROM values from the user
     {
+      serialStatusFlag = SERIAL_COMMAND_INPROGRESS_LEGACY;
       //Format is similar to the above command. 2 bytes for the EEPROM size that is about to be transmitted, a comma and then a raw dump of the EEPROM values
-      while(primarySerial.available() < 3) { delay(1); }
-      uint16_t eepromSize = word(primarySerial.read(), primarySerial.read());
-      if(eepromSize != getEEPROMSize())
+      while( (primarySerial.available() < 3) && (!isRxTimeout()) ) { delay(1); }
+      if(primarySerial.available() >= 3)
       {
-        //Client is trying to send the wrong EEPROM size. Don't let it 
-        primarySerial.println(F("ERR; Incorrect EEPROM size"));
-        break;
-      }
-      else
-      {
-        for(uint16_t x = 0; x < eepromSize; x++)
+        uint16_t eepromSize = word(primarySerial.read(), primarySerial.read());
+        if(eepromSize != getEEPROMSize())
         {
-          while(primarySerial.available() < 3) { delay(1); }
-          EEPROMWriteRaw(x, primarySerial.read());
+          //Client is trying to send the wrong EEPROM size. Don't let it 
+          primarySerial.println(F("ERR; Incorrect EEPROM size"));
+          break;
         }
+        else
+        {
+          for(uint16_t x = 0; x < eepromSize; x++)
+          {
+            while( (primarySerial.available() == 0) && (!isRxTimeout()) ) { delay(1); }
+            if(primarySerial.available()>0) 
+            { 
+              EEPROMWriteRaw(x, primarySerial.read());
+            }
+            else 
+            {
+              //Timed out, abort the write
+              serialStatusFlag = SERIAL_INACTIVE;
+              break;
+            }
+          }
+        }
+        serialStatusFlag = SERIAL_INACTIVE;
       }
-      serialStatusFlag = SERIAL_INACTIVE;
       break;
     }
 
@@ -341,15 +356,29 @@ void legacySerialCommand(void)
       break;
 
     case 't': // receive new Calibration info. Command structure: "t", <tble_idx> <data array>.
+      //NOTE: Legacy Serial comms is being made read-only on firmware versions newer than 202501.
+      //This will receive the command and clear the serial buffer, but NO write to memory or EEPROM will occur. 
       byte tableID;
-      //byte canID;
 
       //The first 2 bytes sent represent the canID and tableID
       while (primarySerial.available() == 0) { }
       tableID = primarySerial.read(); //Not currently used for anything
 
-      receiveCalibration(tableID); //Receive new values and store in memory
-      writeCalibration(); //Store received values in EEPROM
+      //Clear the serial buffers
+      if(tableID == 2)
+      {
+        //O2 calibration. Comes through as 1024 8-bit values
+        for (int x = 0; x < 1024; x++) { primarySerial.read(); }
+      }
+      else
+      {
+        //Temperature calibrations are sent as 32 16-bit values
+        for (uint16_t x = 0; x < 32; x++)
+        {
+          primarySerial.read();
+          primarySerial.read();
+        }
+      }
 
       break;
 
@@ -376,6 +405,8 @@ void legacySerialCommand(void)
       break;
 
     case 'W': // receive new VE obr constant at 'W'+<offset>+<newbyte>
+      //NOTE: Legacy Serial comms is being made read-only on firmware versions newer than 202501.
+      //This burn function will accept the command, but NOT alter any values in memory
       serialStatusFlag = SERIAL_COMMAND_INPROGRESS_LEGACY;
 
       if (isMap())
@@ -386,7 +417,7 @@ void legacySerialCommand(void)
           offset1 = primarySerial.read();
           offset2 = primarySerial.read();
           valueOffset = word(offset2, offset1);
-          setPageValue(currentPage, valueOffset, primarySerial.read());
+          //setPageValue(currentPage, valueOffset, primarySerial.read()); //Value is NOT written to page. 
           serialStatusFlag = SERIAL_INACTIVE;
         }
       }
@@ -395,7 +426,7 @@ void legacySerialCommand(void)
         if(primarySerial.available() >= 2)
         {
           valueOffset = primarySerial.read();
-          setPageValue(currentPage, valueOffset, primarySerial.read());
+          //setPageValue(currentPage, valueOffset, primarySerial.read()); //Value is NOT written to page. 
           serialStatusFlag = SERIAL_INACTIVE;
         }
       }
@@ -425,23 +456,23 @@ void legacySerialCommand(void)
       primarySerial.println(F("Coolant"));
       for (int x = 0; x < 32; x++)
       {
-        primarySerial.print(cltCalibration_bins[x]);
+        primarySerial.print(cltCalibrationTable.axis[x]);
         primarySerial.print(", ");
-        primarySerial.println(cltCalibration_values[x]);
+        primarySerial.println(cltCalibrationTable.values[x]);
       }
       primarySerial.println(F("Inlet temp"));
       for (int x = 0; x < 32; x++)
       {
-        primarySerial.print(iatCalibration_bins[x]);
+        primarySerial.print(iatCalibrationTable.axis[x]);
         primarySerial.print(", ");
-        primarySerial.println(iatCalibration_values[x]);
+        primarySerial.println(iatCalibrationTable.values[x]);
       }
       primarySerial.println(F("O2"));
       for (int x = 0; x < 32; x++)
       {
-        primarySerial.print(o2Calibration_bins[x]);
+        primarySerial.print(o2CalibrationTable.axis[x]);
         primarySerial.print(", ");
-        primarySerial.println(o2Calibration_values[x]);
+        primarySerial.println(o2CalibrationTable.values[x]);
       }
       primarySerial.println(F("WUE"));
       for (int x = 0; x < 10; x++)
@@ -515,24 +546,17 @@ void legacySerialHandler(byte cmd, Stream &targetPort, SerialStatus &targetStatu
   switch (cmd)
   {
 
-    case 'b': // New EEPROM burn command to only burn a single page at a time
+    //Both 'b' and 'B' are the same command
+    case 'B':
+    case 'b':
+      //NOTE: Legacy Serial comms is being made read-only on firmware versions newer than 202501.
+      //This burn function will accept the command, but NOT perform any write of the table/page. 
       targetStatusFlag = SERIAL_COMMAND_INPROGRESS_LEGACY;
 
       if (targetPort.available() >= 2)
       {
         targetPort.read(); //Ignore the first table value, it's always 0
-        writeConfig(targetPort.read());
-        targetStatusFlag = SERIAL_INACTIVE;
-      }
-      break;
-
-    case 'B': // AS above but for the serial compatibility mode. 
-      targetStatusFlag = SERIAL_COMMAND_INPROGRESS_LEGACY;
-
-      if (targetPort.available() >= 2)
-      {
-        targetPort.read(); //Ignore the first table value, it's always 0
-        writeConfig(targetPort.read());
+        //writeConfig(targetPort.read()); //The table write is NOT performed
         targetStatusFlag = SERIAL_INACTIVE;
       }
       break;
@@ -629,8 +653,7 @@ void legacySerialHandler(byte cmd, Stream &targetPort, SerialStatus &targetStatu
       break;
 
     case 'Q': // send code version
-      //targetPort.print(F("speeduino 202402"));
-      targetPort.print(F("speeduino 202405-dev"));
+      targetPort.print(F("speeduino 202504-dev"));
       break;
 
     case 'r': //New format for the optimised OutputChannels
@@ -662,7 +685,7 @@ void legacySerialHandler(byte cmd, Stream &targetPort, SerialStatus &targetStatu
       break;
 
     case 'S': // send code version
-      targetPort.print(F("Speeduino 2024.05-dev"));
+      targetPort.print(F("Speeduino 2025.04-dev"));
       break;
   }
 }
@@ -681,7 +704,6 @@ void legacySerialHandler(byte cmd, Stream &targetPort, SerialStatus &targetStatu
 void sendValues(uint16_t offset, uint16_t packetLength, byte cmd, Stream &targetPort, SerialStatus &targetStatusFlag) { sendValues(offset, packetLength, cmd, targetPort, targetStatusFlag, &getTSLogEntry); } //Defaults to using the standard TS log function
 void sendValues(uint16_t offset, uint16_t packetLength, byte cmd, Stream &targetPort, SerialStatus &targetStatusFlag, uint8_t (*logFunction)(uint16_t))
 {  
-  #if defined(secondarySerial_AVAILABLE)
   if (&targetPort == &secondarySerial)
   {
     //Using Secondary serial, check if selected protocol requires the echo back of the command
@@ -705,7 +727,6 @@ void sendValues(uint16_t offset, uint16_t packetLength, byte cmd, Stream &target
     }  
   }
   else
-  #endif
   {
     if(firstCommsRequest) 
     { 
@@ -716,7 +737,7 @@ void sendValues(uint16_t offset, uint16_t packetLength, byte cmd, Stream &target
 
   //
   targetStatusFlag = SERIAL_TRANSMIT_INPROGRESS_LEGACY;
-  currentStatus.status2 ^= (-currentStatus.hasSync ^ currentStatus.status2) & (1U << BIT_STATUS2_SYNC); //Set the sync bit of the Spark variable to match the hasSync variable
+  currentStatus.hasFullSync = currentStatus.hasSync; //Set the sync bit of the Spark variable to match the hasSync variable
 
   for(byte x=0; x<packetLength; x++)
   {
@@ -743,10 +764,9 @@ void sendValues(uint16_t offset, uint16_t packetLength, byte cmd, Stream &target
   }
 
   targetStatusFlag = SERIAL_INACTIVE;
-  while(targetPort.available()) { targetPort.read(); }
+  while(targetPort.available()>0) { targetPort.read(); }
   // Reset any flags that are being used to trigger page refreshes
-  BIT_CLEAR(currentStatus.status3, BIT_STATUS3_VSS_REFRESH);
-
+  currentStatus.vssUiRefresh = false;
 }
 
 void sendValuesLegacy(void)
@@ -768,7 +788,7 @@ void sendValuesLegacy(void)
   bytestosend -= primarySerial.write(temp);
 
   bytestosend -= primarySerial.write(currentStatus.nSquirts);
-  bytestosend -= primarySerial.write(currentStatus.engine);
+  bytestosend -= primarySerial.write(buildEngineStatus(currentStatus));
   bytestosend -= primarySerial.write(currentStatus.afrTarget);
   bytestosend -= primarySerial.write(currentStatus.afrTarget); // send twice so afrtgt1 == afrtgt2
   bytestosend -= primarySerial.write(99); // send dummy data as we don't have wbo2_en1
@@ -893,10 +913,9 @@ namespace {
 
   inline void send_table_axis(table_axis_iterator it)
   {
-    const table3d_axis_io_converter converter = get_table3d_axis_converter(it.get_domain());
     while (!it.at_end())
     {
-      primarySerial.write(converter.to_byte(*it));
+      primarySerial.write(*it);
       ++it;
     }
   }
@@ -1002,7 +1021,7 @@ namespace {
 
   void print_row(const table_axis_iterator &y_it, table_row_iterator row)
   {
-    serial_print_prepadded_value(get_table3d_axis_converter(y_it.get_domain()).to_byte(*y_it));
+    serial_print_prepadded_value(*y_it);
 
     while (!row.at_end())
     {
@@ -1017,11 +1036,10 @@ namespace {
     primarySerial.print(F("    "));
 
     auto x_it = x_begin(pTable, key);
-    const table3d_axis_io_converter converter = get_table3d_axis_converter(x_it.get_domain());
 
     while(!x_it.at_end())
     {
-      serial_print_prepadded_value(converter.to_byte(*x_it));
+      serial_print_prepadded_value(*x_it);
       ++x_it;
     }
   }
@@ -1158,96 +1176,6 @@ void sendPageASCII(void)
 }
 
 
-/** Processes an incoming stream of calibration data (for CLT, IAT or O2) from TunerStudio.
- * Result is store in EEPROM and memory.
- * 
- * @param tableID - calibration table to process. 0 = Coolant Sensor. 1 = IAT Sensor. 2 = O2 Sensor.
- */
-void receiveCalibration(byte tableID)
-{
-  void* pnt_TargetTable_values; //Pointer that will be used to point to the required target table values
-  uint16_t* pnt_TargetTable_bins;   //Pointer that will be used to point to the required target table bins
-  int OFFSET, DIVISION_FACTOR;
-
-  switch (tableID)
-  {
-    case 0:
-      //coolant table
-      pnt_TargetTable_values = (uint16_t *)&cltCalibration_values;
-      pnt_TargetTable_bins = (uint16_t *)&cltCalibration_bins;
-      OFFSET = CALIBRATION_TEMPERATURE_OFFSET; //
-      DIVISION_FACTOR = 10;
-      break;
-    case 1:
-      //Inlet air temp table
-      pnt_TargetTable_values = (uint16_t *)&iatCalibration_values;
-      pnt_TargetTable_bins = (uint16_t *)&iatCalibration_bins;
-      OFFSET = CALIBRATION_TEMPERATURE_OFFSET;
-      DIVISION_FACTOR = 10;
-      break;
-    case 2:
-      //O2 table
-      //pnt_TargetTable = (byte *)&o2CalibrationTable;
-      pnt_TargetTable_values = (uint8_t *)&o2Calibration_values;
-      pnt_TargetTable_bins = (uint16_t *)&o2Calibration_bins;
-      OFFSET = 0;
-      DIVISION_FACTOR = 1;
-      break;
-
-    default:
-      OFFSET = 0;
-      pnt_TargetTable_values = (uint16_t *)&iatCalibration_values;
-      pnt_TargetTable_bins = (uint16_t *)&iatCalibration_bins;
-      DIVISION_FACTOR = 10;
-      break; //Should never get here, but if we do, just fail back to main loop
-  }
-
-  int16_t tempValue;
-  byte tempBuffer[2];
-
-  if(tableID == 2)
-  {
-    //O2 calibration. Comes through as 1024 8-bit values of which we use every 32nd
-    for (int x = 0; x < 1024; x++)
-    {
-      while ( primarySerial.available() < 1 ) {}
-      tempValue = primarySerial.read();
-
-      if( (x % 32) == 0)
-      {
-        ((uint8_t*)pnt_TargetTable_values)[(x/32)] = (byte)tempValue; //O2 table stores 8 bit values
-        pnt_TargetTable_bins[(x/32)] = (x);
-      }
-      
-    }
-  }
-  else
-  {
-    //Temperature calibrations are sent as 32 16-bit values
-    for (uint16_t x = 0; x < 32; x++)
-    {
-      while ( primarySerial.available() < 2 ) {}
-      tempBuffer[0] = primarySerial.read();
-      tempBuffer[1] = primarySerial.read();
-
-      tempValue = (int16_t)(word(tempBuffer[1], tempBuffer[0])); //Combine the 2 bytes into a single, signed 16-bit value
-      tempValue = div(tempValue, DIVISION_FACTOR).quot; //TS sends values multiplied by 10 so divide back to whole degrees. 
-      tempValue = ((tempValue - 32) * 5) / 9; //Convert from F to C
-      
-      //Apply the temp offset and check that it results in all values being positive
-      tempValue = tempValue + OFFSET;
-      if (tempValue < 0) { tempValue = 0; }
-
-      
-      ((uint16_t*)pnt_TargetTable_values)[x] = tempValue; //Both temp tables have 16-bit values
-      pnt_TargetTable_bins[x] = (x * 32U);
-      writeCalibration();
-    }
-  }
-
-  writeCalibration();
-}
-
 /** Send 256 tooth log entries to primarySerial.
  * if useChar is true, the values are sent as chars to be printed out by a terminal emulator
  * if useChar is false, the values are sent as a 2 byte integer which is readable by TunerStudios tooth logger
@@ -1255,7 +1183,7 @@ void receiveCalibration(byte tableID)
 void sendToothLog_legacy(byte startOffset) /* Blocking */
 {
   //We need TOOTH_LOG_SIZE number of records to send to TunerStudio. If there aren't that many in the buffer then we just return and wait for the next call
-  if (BIT_CHECK(currentStatus.status1, BIT_STATUS1_TOOTHLOG1READY)) //Sanity check. Flagging system means this should always be true
+  if (currentStatus.isToothLog1Full) //Sanity check. Flagging system means this should always be true
   {
       serialStatusFlag = SERIAL_TRANSMIT_TOOTH_INPROGRESS_LEGACY; 
       for (uint8_t x = startOffset; x < TOOTH_LOG_SIZE; ++x)
@@ -1265,7 +1193,7 @@ void sendToothLog_legacy(byte startOffset) /* Blocking */
         primarySerial.write(toothHistory[x] >> 8);
         primarySerial.write(toothHistory[x]);
       }
-      BIT_CLEAR(currentStatus.status1, BIT_STATUS1_TOOTHLOG1READY);
+      currentStatus.isToothLog1Full = false;
       serialStatusFlag = SERIAL_INACTIVE; 
       toothHistoryIndex = 0;
   }
@@ -1282,7 +1210,7 @@ void sendToothLog_legacy(byte startOffset) /* Blocking */
 
 void sendCompositeLog_legacy(byte startOffset) /* Non-blocking */
 {
-  if (BIT_CHECK(currentStatus.status1, BIT_STATUS1_TOOTHLOG1READY)) //Sanity check. Flagging system means this should always be true
+  if (currentStatus.isToothLog1Full) //Sanity check. Flagging system means this should always be true
   {
       serialStatusFlag = SERIAL_TRANSMIT_COMPOSITE_INPROGRESS_LEGACY;
 
@@ -1305,7 +1233,7 @@ void sendCompositeLog_legacy(byte startOffset) /* Non-blocking */
 
         primarySerial.write(compositeLogHistory[x]); //The status byte (Indicates the trigger edge, whether it was a pri/sec pulse, the sync status)
       }
-      BIT_CLEAR(currentStatus.status1, BIT_STATUS1_TOOTHLOG1READY);
+      currentStatus.isToothLog1Full = false;
       toothHistoryIndex = 0;
       serialStatusFlag = SERIAL_INACTIVE; 
   }

@@ -15,10 +15,12 @@
 #include "pages.h"
 #include "comms_CAN.h"
 #include EEPROM_LIB_H //This is defined in the board .h files
+#include "units.h"
+#include "preprocessor.h"
 
 void doUpdates(void)
 {
-  #define CURRENT_DATA_VERSION    24
+  #define CURRENT_DATA_VERSION    25
   //Only the latest update for small flash devices must be retained
    #ifndef SMALL_FLASH_MODE
 
@@ -26,7 +28,8 @@ void doUpdates(void)
   if(readEEPROMVersion() == 2)
   {
     auto table_it = ignitionTable.values.begin();
-    while (!table_it.at_end())
+    //while (!table_it.at_end()) //at_end() doesn't seem to be working for tables of size 16
+    for(uint8_t x=0; x<ignitionTable.values.num_rows;x++)
     {
       auto row = *table_it;
       while (!row.at_end())
@@ -144,8 +147,8 @@ void doUpdates(void)
   if (readEEPROMVersion() == 8)
   {
     //May 2018 adds separate load sources for fuel and ignition. Copy the existing load algorithm into Both
-    configPage2.fuelAlgorithm = configPage2.legacyMAP; //Was configPage2.unused2_38c
-    configPage2.ignAlgorithm = configPage2.legacyMAP; //Was configPage2.unused2_38c
+    configPage2.fuelAlgorithm = (LoadSource)configPage2.legacyMAP; //Was configPage2.unused2_38c
+    configPage2.ignAlgorithm = (LoadSource)configPage2.legacyMAP; //Was configPage2.unused2_38c
 
     //Add option back in for open or closed loop boost. For all current configs to use closed
     configPage4.boostType = 1;
@@ -267,8 +270,6 @@ void doUpdates(void)
   if(readEEPROMVersion() == 12)
   {
     //Nov 2019
-    //New option to only apply voltage correction to dead time. Set existing tunes to use old method
-    configPage2.battVCorMode = BATTV_COR_MODE_WHOLE;
 
     //Manual baro correction curve was added. Give it some default values (All baro readings set to 100%)
     configPage4.baroFuelBins[0] = 80;
@@ -290,7 +291,7 @@ void doUpdates(void)
     configPage4.baroFuelValues[7] = 100;
 
     //Idle advance curve was added. Add default values
-    configPage2.idleAdvEnabled = 0; //Turn this off by default
+    configPage2.idleAdvEnabled = IDLEADVANCE_MODE_OFF; //Turn this off by default
     configPage2.idleAdvTPS = 5; //Active below 5% tps
     configPage2.idleAdvRPM = 20; //Active below 2000 RPM
     configPage4.idleAdvBins[0] = 30;
@@ -334,7 +335,7 @@ void doUpdates(void)
     //Introduced a DFCO delay option. Default it to 0
     configPage2.dfcoDelay = 0;
     //Introduced a minimum temperature for DFCO. Default it to 40C
-    configPage2.dfcoMinCLT = 80; //CALIBRATION_TEMPERATURE_OFFSET is 40
+    configPage2.dfcoMinCLT = temperatureAddOffset(40);
 
     //Update flex fuel ignition config values for 40 degrees offset
     for (int i=0; i<6; i++)
@@ -371,7 +372,7 @@ void doUpdates(void)
     configPage2.SoftLimitMode = SOFT_LIMIT_FIXED;
 
     //VSS was added for testing, disable it by default
-    configPage2.vssMode = 0;
+    configPage2.vssMode = VSS_MODE_OFF;
 
     writeAllConfig();
     storeEEPROMVersion(14);
@@ -387,16 +388,16 @@ void doUpdates(void)
     for(int x=0; x<(CALIBRATION_TABLE_SIZE/16); x++) //Each calibration table is 512 bytes long
     {
       y = EEPROM_CALIBRATION_CLT_OLD + (x * 16);
-      cltCalibration_values[x] = EEPROM.read(y);
-      cltCalibration_bins[x] = (x * 32);
+      cltCalibrationTable.values[x] = EEPROM.read(y);
+      cltCalibrationTable.axis[x] = (x * 32);
 
       y = EEPROM_CALIBRATION_IAT_OLD + (x * 16);
-      iatCalibration_values[x] = EEPROM.read(y);
-      iatCalibration_bins[x] = (x * 32);
+      iatCalibrationTable.values[x] = EEPROM.read(y);
+      iatCalibrationTable.axis[x] = (x * 32);
 
       y = EEPROM_CALIBRATION_O2_OLD + (x * 16);
-      o2Calibration_values[x] = EEPROM.read(y);
-      o2Calibration_bins[x] = (x * 32);
+      o2CalibrationTable.values[x] = EEPROM.read(y);
+      o2CalibrationTable.axis[x] = (x * 32);
     }
     writeCalibration();
 
@@ -664,7 +665,7 @@ void doUpdates(void)
     }
 
     //AFR Protection added, add default values
-    configPage9.afrProtectEnabled = 0; //Disable by default
+    configPage9.afrProtectEnabled = AFR_PROTECT_OFF; //Disable by default
     configPage9.afrProtectMinMAP = 90; //Is divided by 2, value represents 180kPa
     configPage9.afrProtectMinRPM = 40; //4000 RPM min
     configPage9.afrProtectMinTPS = 160; //80% TPS min
@@ -754,7 +755,7 @@ void doUpdates(void)
 
   if(readEEPROMVersion() == 23)
   {
-    //202405
+    //202501
     configPage10.knock_mode = KNOCK_MODE_OFF;
 
     //Change the CAN Broadcast settings to be a selection
@@ -769,9 +770,33 @@ void doUpdates(void)
     configPage2.flexFreqLow = 50;
     configPage2.flexFreqHigh = 150;
 
+    //Realign configPage10 to correct unaligned pointer warnings
+    //Move boostIntv from position 27 to 25
+    uint8_t origBoostIntv = ((uint8_t *)&configPage10)[27];
+    ((uint8_t *)&configPage10)[27] = ((uint8_t *)&configPage10)[26];
+    ((uint8_t *)&configPage10)[26] = ((uint8_t *)&configPage10)[25];
+    ((uint8_t *)&configPage10)[25] = origBoostIntv;
+    //Move lnchCtrlTPS from position 32 to 74
+    uint8_t origlnchCtrlTPS= ((uint8_t *)&configPage10)[32];
+    for(byte x=32U; x<74U; x++)
+    {
+      ((uint8_t *)&configPage10)[x] = ((uint8_t *)&configPage10)[x+1];
+    }
+    ((uint8_t *)&configPage10)[74] = origlnchCtrlTPS;
+
     writeAllConfig();
     storeEEPROMVersion(24);
   }
+  
+  if(readEEPROMVersion() == 24)
+  {
+    //202504
+
+
+    writeAllConfig();
+    storeEEPROMVersion(25);
+  }
+  
   
   //Final check is always for 255 and 0 (Brand new arduino)
   if( (readEEPROMVersion() == 0) || (readEEPROMVersion() == 255) )

@@ -1,5 +1,4 @@
-#include "board_stm32_official.h"
-#include "globals.h"
+#include "board_definition.h"
 
 #if defined(STM32_CORE_VERSION_MAJOR)
 #include "auxiliaries.h"
@@ -81,7 +80,7 @@ HardwareTimer Timer11(TIM7);
 STM32RTC& rtc = STM32RTC::getInstance();
 #endif
 
-  void initBoard()
+  void initBoard(uint32_t baudRate)
   {
     /*
     ***********************************************************************************************************
@@ -227,7 +226,7 @@ STM32RTC& rtc = STM32RTC::getInstance();
     #if ( STM32_CORE_VERSION_MAJOR < 2 )
     Timer5.setMode(2, TIMER_OUTPUT_COMPARE);
     #else //2.0 forward
-    Timer5.setMode(1, TIMER_OUTPUT_COMPARE_TOGGLE);
+    Timer5.setMode(2, TIMER_OUTPUT_COMPARE_TOGGLE);
     #endif
     Timer5.attachInterrupt(2, fuelSchedule6Interrupt);
     #endif
@@ -288,7 +287,7 @@ STM32RTC& rtc = STM32RTC::getInstance();
     Timer4.attachInterrupt(4, ignitionSchedule8Interrupt);
     #endif
 
-
+    Serial.begin(baudRate);
   }
 
   uint16_t freeRam()
@@ -389,4 +388,22 @@ STM32RTC& rtc = STM32RTC::getInstance();
   void ignitionSchedule8Interrupt(HardwareTimer*){ignitionSchedule8Interrupt();}
   #endif
   #endif //End core<=1.8
+
+uint8_t getSystemTemp(void)
+{
+  //stm32F4xx does have an internal temperature sensor, but needs to be implemented
+  return 0;
+}
+
+void boardInitRTC(void)
+{
+  // Do nothing
+}
+
+
+void boardInitPins(void)
+{
+  // Do nothing
+}
+
 #endif

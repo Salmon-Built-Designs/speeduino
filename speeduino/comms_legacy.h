@@ -7,8 +7,8 @@
  * 
  */
 
-#ifndef COMMS_H
-#define COMMS_H
+#ifndef COMMS_LEGACY_H
+#define COMMS_LEGACY_H
 
 /** \enum SerialStatus
  * @brief The current state of serial communication
@@ -80,9 +80,8 @@ void sendValues(uint16_t offset, uint16_t packetLength, byte cmd, Stream &target
 void sendValuesLegacy(void);
 void sendPage(void);
 void sendPageASCII(void);
-void receiveCalibration(byte tableID);
 void testComm(void);
 void sendToothLog_legacy(byte startOffset);
 void sendCompositeLog_legacy(byte startOffset);
 
-#endif // COMMS_H
+#endif // COMMS_LEGACY_H

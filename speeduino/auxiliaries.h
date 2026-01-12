@@ -1,9 +1,10 @@
 #ifndef AUX_H
 #define AUX_H
 
-#include BOARD_H //Note that this is not a real file, it is defined in globals.h. 
+#include "board_definition.h"
 
 #include <SimplyAtomic.h>
+#include "port_pin.h"
 
 void initialiseAuxPWM(void);
 void boostControl(void);
@@ -39,8 +40,8 @@ void wmiControl(void);
 #define AIRCON_PIN_HIGH()       (digitalWrite(pinAirConComp, HIGH))
 #define AIRCON_FAN_PIN_LOW()    (digitalWrite(pinAirConFan, LOW))
 #define AIRCON_FAN_PIN_HIGH()   (digitalWrite(pinAirConFan, HIGH))
-#define FUEL_PUMP_ON()          (digitalWrite(pinFuelPump, HIGH))
-#define FUEL_PUMP_OFF()         (digitalWrite(pinFuelPump, LOW))
+#define FUEL_PUMP_ON()          { digitalWrite(pinFuelPump, HIGH); currentStatus.fuelPumpOn = true; }
+#define FUEL_PUMP_OFF()         { digitalWrite(pinFuelPump, LOW); currentStatus.fuelPumpOn = false; }
 
 #else
 
@@ -54,8 +55,8 @@ void wmiControl(void);
 #define N2O_STAGE1_PIN_HIGH()   ATOMIC() { *n2o_stage1_pin_port |= (n2o_stage1_pin_mask);   }
 #define N2O_STAGE2_PIN_LOW()    ATOMIC() { *n2o_stage2_pin_port &= ~(n2o_stage2_pin_mask);  }
 #define N2O_STAGE2_PIN_HIGH()   ATOMIC() { *n2o_stage2_pin_port |= (n2o_stage2_pin_mask);   }
-#define FUEL_PUMP_ON()          ATOMIC() { *pump_pin_port |= (pump_pin_mask);     }
-#define FUEL_PUMP_OFF()         ATOMIC() { *pump_pin_port &= ~(pump_pin_mask);    }
+#define FUEL_PUMP_ON()          ATOMIC() { *pump_pin_port |= (pump_pin_mask);  currentStatus.fuelPumpOn = true;    }
+#define FUEL_PUMP_OFF()         ATOMIC() { *pump_pin_port &= ~(pump_pin_mask); currentStatus.fuelPumpOn = false;   }
 
 //Note the below macros cannot use ATOMIC() as they are called from within ternary operators. The ATOMIC is instead placed around the ternary call below
 #define FAN_PIN_LOW()           *fan_pin_port &= ~(fan_pin_mask)
@@ -67,10 +68,10 @@ void wmiControl(void);
 
 #endif
 
-#define AIRCON_ON()             ATOMIC() { ((((configPage15.airConCompPol)==1)) ? AIRCON_PIN_LOW() : AIRCON_PIN_HIGH()); BIT_SET(currentStatus.airConStatus, BIT_AIRCON_COMPRESSOR); }
-#define AIRCON_OFF()            ATOMIC() { ((((configPage15.airConCompPol)==1)) ? AIRCON_PIN_HIGH() : AIRCON_PIN_LOW()); BIT_CLEAR(currentStatus.airConStatus, BIT_AIRCON_COMPRESSOR); }
-#define AIRCON_FAN_ON()         ATOMIC() { ((((configPage15.airConFanPol)==1)) ? AIRCON_FAN_PIN_LOW() : AIRCON_FAN_PIN_HIGH()); BIT_SET(currentStatus.airConStatus, BIT_AIRCON_FAN); }
-#define AIRCON_FAN_OFF()        ATOMIC() { ((((configPage15.airConFanPol)==1)) ? AIRCON_FAN_PIN_HIGH() : AIRCON_FAN_PIN_LOW()); BIT_CLEAR(currentStatus.airConStatus, BIT_AIRCON_FAN); }
+#define AIRCON_ON()             ATOMIC() { ((((configPage15.airConCompPol)==1)) ? AIRCON_PIN_LOW() : AIRCON_PIN_HIGH()); currentStatus.airconCompressorOn = true; }
+#define AIRCON_OFF()            ATOMIC() { ((((configPage15.airConCompPol)==1)) ? AIRCON_PIN_HIGH() : AIRCON_PIN_LOW()); currentStatus.airconCompressorOn = false; }
+#define AIRCON_FAN_ON()         ATOMIC() { ((((configPage15.airConFanPol)==1)) ? AIRCON_FAN_PIN_LOW() : AIRCON_FAN_PIN_HIGH()); currentStatus.airconFanOn = true; }
+#define AIRCON_FAN_OFF()        ATOMIC() { ((((configPage15.airConFanPol)==1)) ? AIRCON_FAN_PIN_HIGH() : AIRCON_FAN_PIN_LOW()); currentStatus.airconFanOn = false; }
 
 #define FAN_ON()                ATOMIC() { ((configPage6.fanInv) ? FAN_PIN_LOW() : FAN_PIN_HIGH()); }
 #define FAN_OFF()               ATOMIC() { ((configPage6.fanInv) ? FAN_PIN_HIGH() : FAN_PIN_LOW()); }
@@ -85,12 +86,12 @@ void wmiControl(void);
 
 #define WMI_TANK_IS_EMPTY() ((configPage10.wmiEmptyEnabled) ? ((configPage10.wmiEmptyPolarity) ? digitalRead(pinWMIEmpty) : !digitalRead(pinWMIEmpty)) : 1)
 
-extern volatile PORT_TYPE *vvt1_pin_port;
-extern volatile PINMASK_TYPE vvt1_pin_mask;
-extern volatile PORT_TYPE *vvt2_pin_port;
-extern volatile PINMASK_TYPE vvt2_pin_mask;
-extern volatile PORT_TYPE *fan_pin_port;
-extern volatile PINMASK_TYPE fan_pin_mask;
+extern port_register_t vvt1_pin_port;
+extern pin_mask_t vvt1_pin_mask;
+extern port_register_t vvt2_pin_port;
+extern pin_mask_t vvt2_pin_mask;
+extern port_register_t fan_pin_port;
+extern pin_mask_t fan_pin_mask;
 
 #if defined(PWM_FAN_AVAILABLE)//PWM fan not available on Arduino MEGA
 extern uint16_t fan_pwm_max_count; //Used for variable PWM frequency

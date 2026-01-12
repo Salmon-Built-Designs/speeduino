@@ -15,7 +15,6 @@ Timers are typically low resolution (Compared to Schedulers), with maximum frequ
 #include "sensors.h"
 #include "scheduler.h"
 #include "scheduledIO.h"
-#include "speeduino.h"
 #include "scheduler.h"
 #include "auxiliaries.h"
 #include "comms.h"
@@ -62,7 +61,7 @@ void initialiseTimers(void)
 
 static inline void applyOverDwellCheck(IgnitionSchedule &schedule, uint32_t targetOverdwellTime) {
   //Check first whether each spark output is currently on. Only check it's dwell time if it is
-  if ((schedule.Status == RUNNING) && (schedule.startTime < targetOverdwellTime)) { 
+  if ((isRunning(schedule)) && (schedule.startTime < targetOverdwellTime)) { 
     schedule.pEndCallback(); schedule.Status = OFF; 
   }
 }
@@ -122,7 +121,7 @@ void oneMSInterval(void) //Most ARM chips can simply call a function
   // See if we're in power-on sweep mode
   if( currentStatus.tachoSweepEnabled )
   {
-    if( (currentStatus.engine != 0) || (ms_counter >= TACHO_SWEEP_TIME_MS) )  { currentStatus.tachoSweepEnabled = false; }  // Stop the sweep after SWEEP_TIME, or if real tach signals have started
+    if( (currentStatus.engineIsRunning) || (currentStatus.engineIsCranking) || (ms_counter >= TACHO_SWEEP_TIME_MS) )  { currentStatus.tachoSweepEnabled = false; }  // Stop the sweep after SWEEP_TIME, or if real tach signals have started
     else 
     {
       // Ramp the needle smoothly to the max over the SWEEP_RAMP time
@@ -186,7 +185,7 @@ void oneMSInterval(void) //Most ARM chips can simply call a function
     loop33ms = 0;
 
     //Pulse fuel and ignition test outputs are set at 30Hz
-    if( BIT_CHECK(currentStatus.testOutputs, 1) && (currentStatus.RPM == 0) )
+    if( (currentStatus.isTestModeActive) && (currentStatus.RPM == 0) )
     {
       //Check for pulsed injector output test
       if(BIT_CHECK(HWTest_INJ_Pulsed, INJ1_CMD_BIT)) { openInjector1(); }
@@ -230,10 +229,14 @@ void oneMSInterval(void) //Most ARM chips can simply call a function
     currentStatus.rpmDOT = (currentStatus.RPM - lastRPM_100ms) * 10; //This is the RPM per second that the engine has accelerated/decelerated in the last loop
     lastRPM_100ms = currentStatus.RPM; //Record the current RPM for next calc
 
-    if ( BIT_CHECK(currentStatus.engine, BIT_ENGINE_RUN) ) { runSecsX10++; }
+    if ( currentStatus.engineIsRunning ) { runSecsX10++; }
     else { runSecsX10 = 0; }
 
-    if ( (currentStatus.injPrimed == false) && (seclx10 == configPage2.primingDelay) && (currentStatus.RPM == 0) ) { beginInjectorPriming(); currentStatus.injPrimed = true; }
+    if ( (currentStatus.injPrimed == false) && (seclx10 >= configPage2.primingDelay) && (currentStatus.RPM == 0) && (currentStatus.initialisationComplete == true) ) 
+    { 
+      beginInjectorPriming(); 
+      currentStatus.injPrimed = true; 
+    }
     seclx10++;
   }
 
@@ -259,7 +262,7 @@ void oneMSInterval(void) //Most ARM chips can simply call a function
     //**************************************************************************************************************************************************
     //This updates the runSecs variable
     //If the engine is running or cranking, we need to update the run time counter.
-    if (BIT_CHECK(currentStatus.engine, BIT_ENGINE_RUN))
+    if (currentStatus.engineIsRunning)
     { //NOTE - There is a potential for a ~1sec gap between engine crank starting and the runSec number being incremented. This may delay ASE!
       if (currentStatus.runSecs <= (UINT8_MAX-1U)) //Ensure we cap out at 255 and don't overflow. (which would reset ASE and cause problems with the closed loop fuelling (Which has to wait for the O2 to warmup))
         { currentStatus.runSecs++; } //Increment our run counter by 1 second.
@@ -288,8 +291,7 @@ void oneMSInterval(void) //Most ARM chips can simply call a function
         if(currentStatus.RPM == 0)
         {
           //If we reach here then the priming is complete, however only turn off the fuel pump if the engine isn't running
-          digitalWrite(pinFuelPump, LOW);
-          currentStatus.fuelPumpOn = false;
+          FUEL_PUMP_OFF();
         }
       }
     }
@@ -337,7 +339,7 @@ void oneMSInterval(void) //Most ARM chips can simply call a function
   }
 
   //Turn off any of the pulsed testing outputs if they are active and have been running for long enough
-  if( BIT_CHECK(currentStatus.testOutputs, 1) )
+  if( currentStatus.isTestModeActive )
   {
     //Check for pulsed injector output test
     if( (HWTest_INJ_Pulsed > 0)  )
